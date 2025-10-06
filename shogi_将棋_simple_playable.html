@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>簡易将棋（プレイ可能）</title>
+<style>
+  :root{--bg:#0b1220;--panel:#07121a;--light:#f8fafc;--accent:#ffd166}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,'Hiragino Kaku Gothic ProN','Meiryo',sans-serif;background:linear-gradient(180deg,var(--bg),#07111a);color:var(--light);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+  .wrap{width:min(1100px,98%);display:flex;gap:18px}
+  .board{background:#f3e3b8;border-radius:8px;padding:8px;display:grid;grid-template-columns:repeat(9,64px);grid-auto-rows:64px;gap:4px}
+  .cell{background:rgba(0,0,0,0.03);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:22px;color:#111;position:relative;cursor:pointer}
+  .cell.select{outline:3px solid rgba(34,197,94,0.8)}
+  .cell.move{outline:3px dashed rgba(59,130,246,0.9)}
+  .piece{display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-weight:700}
+  .sente{transform:rotate(0deg)}
+  .gote{transform:rotate(180deg);}
+  .side{width:320px;display:flex;flex-direction:column;gap:12px}
+  .panel{background:linear-gradient(180deg,#071a12,#052018);padding:12px;border-radius:10px}
+  .hand{display:flex;flex-wrap:wrap;gap:6px}
+  .hand button{background:#fff;border:none;padding:6px 8px;border-radius:6px;cursor:pointer;font-weight:700}
+  button{background:var(--accent);border:none;padding:8px 10px;border-radius:8px;cursor:pointer;font-weight:700}
+  h2{margin:0 0 6px 0}
+  .muted{opacity:.8;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <div id="board" class="board" aria-label="将棋盤"></div>
+    <div style="margin-top:8px;color:#ddd">操作: 駒をクリック → 移動先をクリック。 持ち駒をクリック → 盤上のマスをクリックで打つ。</div>
+  </div>
+  <div class="side">
+    <div class="panel">
+      <h2>情報</h2>
+      <div id="turn">先手（●）の番</div>
+      <div class="muted" id="status">王を取った方が勝ち（簡易ルール）</div>
+    </div>
+    <div class="panel">
+      <h2>持ち駒</h2>
+      <div>先手 (●)</div>
+      <div id="handSente" class="hand"></div>
+      <hr style="margin:8px 0;opacity:.1">
+      <div>後手 (○)</div>
+      <div id="handGote" class="hand"></div>
+    </div>
+    <div class="panel">
+      <button id="resetBtn">初期配置に戻す</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Simple Shogi implementation (playable but simplified rules)
+// Board: 9x9, rows 0..8 top->bottom, cols 0..8 left->right
+
+const PIECE_KANJI = {
+  K: '王', // king
+  R: '飛', // rook
+  B: '角', // bishop
+  G: '金', // gold
+  S: '銀', // silver
+  N: '桂', // knight
+  L: '香', // lance
+  P: '歩'  // pawn
+};
+
+// For promoted pieces, we prefix + and show different kanji when possible
+const PROM_KANJI = {
+  R: '+飛',
+  B: '+角',
+  S: '+成銀',
+  N: '+成桂',
+  L: '+成香',
+  P: '+と'
+};
+
+let boardEl = document.getElementById('board');
+let turnEl = document.getElementById('turn');
+let handSenteEl = document.getElementById('handSente');
+let handGoteEl = document.getElementById('handGote');
+let resetBtn = document.getElementById('resetBtn');
+
+// Game state
+let board = []; // each cell: null or {type:'P', promoted:false, owner: 's'|'g'}
+let turn = 's'; // 's' sente(先手, black) , 'g' gote(後手, white)
+let selected = null; // {r,c} or {hand:true,owner:'s','g',type:'P'} if a hand piece is selected to drop
+let hands = { s: {}, g: {} }; // counts of captured pieces per side
+
+function coordKey(r,c){return r+':'+c}
+
+function initBoard(){
+  // empty board
+  board = Array.from({length:9}, ()=>Array(9).fill(null));
+  hands = { s: {}, g: {} };
+
+  // initial setup (standard)
+  // row 0 (gote back rank)
+  board[0][0] = {type:'L',owner:'g'}; board[0][1] = {type:'N',owner:'g'}; board[0][2] = {type:'S',owner:'g'}; board[0][3] = {type:'G',owner:'g'}; board[0][4] = {type:'K',owner:'g'}; board[0][5] = {type:'G',owner:'g'}; board[0][6] = {type:'S',owner:'g'}; board[0][7] = {type:'N',owner:'g'}; board[0][8] = {type:'L',owner:'g'};
+  // row 1
+  board[1][1] = {type:'R',owner:'g'}; board[1][7] = {type:'B',owner:'g'}; // note: rotated positions standard is R at 1,7? Actually rook at 1,7? We'll place rook at 1,7? Keep simplified: R at 1,7 and B at 1,1? But classic is rook at 1,7 for sente? To avoid confusion, place rook at 1,7 and bishop at 1,1
+  board[1][1] = {type:'B',owner:'g'}; board[1][7] = {type:'R',owner:'g'};
+  // row 2 pawns
+  for(let c=0;c<9;c++) board[2][c] = {type:'P',owner:'g'};
+
+  // sente side mirror
+  for(let c=0;c<9;c++) board[6][c] = {type:'P',owner:'s'};
+  board[7][1] = {type:'R',owner:'s'}; board[7][7] = {type:'B',owner:'s'};
+  board[8][0] = {type:'L',owner:'s'}; board[8][1] = {type:'N',owner:'s'}; board[8][2] = {type:'S',owner:'s'}; board[8][3] = {type:'G',owner:'s'}; board[8][4] = {type:'K',owner:'s'}; board[8][5] = {type:'G',owner:'s'}; board[8][6] = {type:'S',owner:'s'}; board[8][7] = {type:'N',owner:'s'}; board[8][8] = {type:'L',owner:'s'};
+
+  // ensure hands empty
+  updateUI();
+}
+
+function clone(o){return JSON.parse(JSON.stringify(o))}
+
+function inBounds(r,c){return r>=0 && r<9 && c>=0 && c<9}
+
+function renderBoard(){
+  boardEl.innerHTML = '';
+  for(let r=0;r<9;r++){
+    for(let c=0;c<9;c++){
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      cell.dataset.r = r; cell.dataset.c = c;
+      const piece = board[r][c];
+      if(piece){
+        const p = document.createElement('div');
+        p.className = 'piece '+(piece.owner==='s'?'sente':'gote');
+        p.textContent = piece.promoted ? (PROM_KANJI[piece.type] || ('+'+ (PIECE_KANJI[piece.type]||piece.type))) : (PIECE_KANJI[piece.type]||piece.type);
+        cell.appendChild(p);
+      }
+      if(selected && selected.r==r && selected.c==c && !selected.hand) cell.classList.add('select');
+      cell.addEventListener('click', onCellClick);
+      boardEl.appendChild(cell);
+    }
+  }
+}
+
+function updateUI(){
+  renderBoard();
+  turnEl.textContent = (turn==='s'? '先手（●）の番':'後手（○）の番');
+  updateHands();
+}
+
+function updateHands(){
+  handSenteEl.innerHTML = '';
+  handGoteEl.innerHTML = '';
+  ['P','L','N','S','G','B','R'].forEach(t=>{
+    const countS = hands.s[t]||0;
+    if(countS>0){
+      const btn = document.createElement('button'); btn.textContent = `${PIECE_KANJI[t]||t} x${countS}`;
+      btn.onclick = ()=>selectHand('s',t);
+      handSenteEl.appendChild(btn);
+    }
+    const countG = hands.g[t]||0;
+    if(countG>0){
+      const btn = document.createElement('button'); btn.textContent = `${PIECE_KANJI[t]||t} x${countG}`;
+      btn.onclick = ()=>selectHand('g',t);
+      handGoteEl.appendChild(btn);
+    }
+  });
+}
+
+function selectHand(owner,type){
+  // only allow selecting if it's that side's turn
+  if((turn==='s' && owner!=='s') || (turn==='g' && owner!=='g')) return;
+  selected = {hand:true, owner, type};
+  // highlight nothing until user clicks a cell to drop
+  renderBoard();
+}
+
+function onCellClick(){
+  const r = +this.dataset.r; const c = +this.dataset.c;
+  const cellPiece = board[r][c];
+
+  // If a hand piece is selected => attempt drop
+  if(selected && selected.hand){
+    if(selected.owner!==turn) return; // cannot drop opponent's hand
+    if(cellPiece) return; // can't drop on occupied
+    // simple drop checks: pawn drop in same file? disallow if pawn already exists for that owner in column
+    if(selected.type==='P'){
+      for(let rr=0;rr<9;rr++){
+        const p = board[rr][c]; if(p && p.type==='P' && p.owner===turn) { alert('同じ筋に歩が存在します（歩の打ち歩詰めや二歩禁止ルールの一部）。'); return; }
+      }
+      // also cannot drop pawn on last rank (no legal move)
+      if((turn==='s' && r===0) || (turn==='g' && r===8)){ alert('そのマスには歩を打てません。'); return; }
+    }
+    // knight cannot be dropped on last two ranks for that side
+    if(selected.type==='N'){
+      if((turn==='s' && r<=1) || (turn==='g' && r>=7)){ alert('桂はその段には打てません。'); return; }
+    }
+    // lance cannot be dropped on last rank
+    if(selected.type==='L'){
+      if((turn==='s' && r===0) || (turn==='g' && r===8)){ alert('香はその段には打てません。'); return; }
+    }
+
+    // perform drop
+    board[r][c] = {type:selected.type, owner:turn};
+    hands[turn][selected.type] = (hands[turn][selected.type]||0)-1; if(hands[turn][selected.type]===0) delete hands[turn][selected.type];
+    selected = null; toggleTurn(); updateUI(); return;
+  }
+
+  // If selecting own piece
+  if(cellPiece && cellPiece.owner===turn){
+    // select piece and show legal moves
+    selected = {r,c, piece: clone(cellPiece)};
+    renderBoard();
+    highlightMoves(r,c);
+    return;
+  }
+
+  // If a piece is selected (from board) and clicking a target square
+  if(selected && !selected.hand){
+    const from = {r:selected.r,c:selected.c};
+    const legal = getLegalMoves(selected.r, selected.c, selected.piece);
+    if(legal.some(e=>e.r===r && e.c===c)){
+      // move and handle capture and promotion
+      const dest = board[r][c];
+      if(dest){
+        // capture: add to hands (demote promoted)
+        const capturedType = dest.promoted ? demote(dest.type) : dest.type;
+        const owner = turn; // captured goes to mover
+        hands[owner][capturedType] = (hands[owner][capturedType]||0)+1;
+      }
+      // move piece
+      board[r][c] = board[from.r][from.c]; board[from.r][from.c] = null;
+      // promotion: if move crosses into promotion zone (rows 0-2 for sente? use standard: gote's zone rows 0-2, sente's zone 6-8?)
+      const promotionZoneFor = (turn==='s')? [0,1,2]: [6,7,8];
+      // allow promotion if piece is promotable and either from or to is in opponent zone
+      if(canPromote(board[r][c].type)){
+        const fromIn = promotionZoneFor.includes(from.r);
+        const toIn = promotionZoneFor.includes(r);
+        if(fromIn || toIn){
+          // ask player to promote
+          if(confirm('成りますか？（OK=成る / キャンセル=成らない）')){
+            board[r][c].promoted = true;
+          }
+        }
+      }
+
+      // victory if king captured
+      if(dest && dest.type==='K'){
+        alert((turn==='s'?'先手(●)':'後手(○)') + ' の勝ち！ 王を取った。');
+        // reset or stop
+      }
+
+      selected = null; toggleTurn(); updateUI();
+    } else {
+      // invalid target: clear selection
+      selected = null; renderBoard();
+    }
+  }
+}
+
+function demote(type){ return type; }
+function canPromote(type){ return ['P','L','N','S','B','R'].includes(type); }
+
+function toggleTurn(){ turn = (turn==='s')? 'g' : 's'; }
+
+function getLegalMoves(r,c,piece){
+  const moves = [];
+  if(!piece) return moves;
+  const owner = piece.owner;
+  const dir = (owner==='s')? -1 : 1; // sente moves up (decreasing r), gote moves down
+
+  const pushIf = (rr,cc)=>{ if(inBounds(rr,cc)){ const t = board[rr][cc]; if(!t || t.owner!==owner) moves.push({r:rr,c:cc}); }};
+
+  switch(piece.type){
+    case 'K':
+      for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++) if(dr!==0||dc!==0) pushIf(r+dr,c+dc);
+      break;
+    case 'G':
+      // gold: forward, sides, back-diagonals? Gold moves: forward, forward-left, forward-right, left,right,back
+      pushIf(r+dir,c); pushIf(r,c-1); pushIf(r,c+1); pushIf(r-dir,c); pushIf(r+dir,c-1); pushIf(r+dir,c+1);
+      break;
+    case 'S':
+      if(piece.promoted){ // acts as gold
+        pushIf(r+dir,c); pushIf(r,c-1); pushIf(r,c+1); pushIf(r-dir,c); pushIf(r+dir,c-1); pushIf(r+dir,c+1);
+      } else {
+        pushIf(r+dir,c); pushIf(r+dir,c-1); pushIf(r+dir,c+1); pushIf(r-dir,c-1); pushIf(r-dir,c+1);
+      }
+      break;
+    case 'N':
+      if(piece.promoted){ pushIf(r+dir,c); pushIf(r,c-1); pushIf(r,c+1); pushIf(r-dir,c); pushIf(r+dir,c-1); pushIf(r+dir,c+1); }
+      else { pushIf(r+2*dir,c-1); pushIf(r+2*dir,c+1); }
+      break;
+    case 'L':
+      if(piece.promoted){ pushIf(r+dir,c); pushIf(r,c-1); pushIf(r,c+1); pushIf(r-dir,c); pushIf(r+dir,c-1); pushIf(r+dir,c+1); }
+      else {
+        let rr=r+dir, cc=c; while(inBounds(rr,cc)){ const t=board[rr][cc]; if(!t) moves.push({r:rr,c:cc}); else { if(t.owner!==owner) moves.push({r:rr,c:cc}); break;} rr+=dir; }
+      }
+      break;
+    case 'R':
+      // sliding orthogonal
+      [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{ let rr=r+dr, cc=c+dc; while(inBounds(rr,cc)){ const t=board[rr][cc]; if(!t) moves.push({r:rr,c:cc}); else { if(t.owner!==owner) moves.push({r:rr,c:cc}); break;} rr+=dr; cc+=dc; }});
+      if(piece.promoted){ // dragon king gains king diagonals as well
+        for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++){ if(Math.abs(dr)+Math.abs(dc)===2){ const rr=r+dr, cc=c+dc; if(inBounds(rr,cc)){ const t=board[rr][cc]; if(!t || t.owner!==owner) moves.push({r:rr,c:cc}); } }}
+      }
+      break;
+    case 'B':
+      [[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dr,dc])=>{ let rr=r+dr, cc=c+dc; while(inBounds(rr,cc)){ const t=board[rr][cc]; if(!t) moves.push({r:rr,c:cc}); else { if(t.owner!==owner) moves.push({r:rr,c:cc}); break;} rr+=dr; cc+=dc; }});
+      if(piece.promoted){ // horse gains king orthogonals
+        [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{ const rr=r+dr, cc=c+dc; if(inBounds(rr,cc)){ const t=board[rr][cc]; if(!t || t.owner!==owner) moves.push({r:rr,c:cc}); }});
+      }
+      break;
+    case 'P':
+      if(piece.promoted){ pushIf(r+dir,c); pushIf(r,c-1); pushIf(r,c+1); pushIf(r-dir,c); pushIf(r+dir,c-1); pushIf(r+dir,c+1); }
+      else pushIf(r+dir,c);
+      break;
+  }
+  // filter out moves that would land on friendly piece (already filtered by pushIf), return unique
+  const uniq = []; const seen = new Set(); for(const m of moves){ const k = coordKey(m.r,m.c); if(!seen.has(k)){ seen.add(k); uniq.push(m); }}
+  return uniq;
+}
+
+function highlightMoves(r,c){
+  const piece = board[r][c]; if(!piece) return;
+  const legal = getLegalMoves(r,c,piece);
+  // add move class to cells
+  const cells = document.querySelectorAll('.cell');
+  cells.forEach(cell=>{
+    const rr = +cell.dataset.r, cc = +cell.dataset.c;
+    if(legal.some(e=>e.r===rr && e.c===cc)) cell.classList.add('move');
+    else cell.classList.remove('move');
+  });
+}
+
+resetBtn.addEventListener('click', ()=>{ if(confirm('初期配置に戻しますか？')){ initBoard(); } });
+
+// click outside to clear selection
+document.addEventListener('click', (e)=>{
+  const cell = e.target.closest('.cell');
+  const handBtn = e.target.closest('#handSente, #handGote');
+  if(!cell && !handBtn){ selected = null; renderBoard(); }
+});
+
+// initialize
+initBoard();
+
+</script>
+</body>
+</html>
